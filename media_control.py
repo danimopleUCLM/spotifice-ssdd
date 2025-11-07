@@ -11,9 +11,9 @@ import Spotifice  # type: ignore # noqa: E402
 
 
 def get_proxy(ic, property, cls):
-    """
-    Función de utilidad para obtener un proxy de forma robusta.
-    """
+    
+    #Función de utilidad para obtener un proxy de forma robusta.
+    
     proxy = ic.propertyToProxy(property)
     if proxy is None:
         print(f"Error: Propiedad '{property}' no encontrada en el config.")
@@ -41,7 +41,7 @@ def get_proxy(ic, property, cls):
 
 
 def print_status(render, test_name=""):
-    """Imprime el estado actual del reproductor."""
+    # Imprime el estado actual del reproductor.
     try:
         status = render.get_status()
         track = render.get_current_track()
@@ -55,7 +55,7 @@ def print_status(render, test_name=""):
         return None, None
 
 def test_exception(func, expected_exception, test_name):
-    """Función de utilidad para probar excepciones."""
+    #Función de utilidad para probar excepciones.
     try:
         func()
         print(f"  [ERROR] {test_name}: Se esperaba {expected_exception.__name__}, pero no falló.")
