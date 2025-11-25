@@ -70,3 +70,15 @@ class PlaybackTests(TestRender):
             self.sut.play()
 
         self.assertEqual(cm.exception.reason, "Already playing")
+
+class AuthTests(TestRender):
+    def test_secure_play(self):
+        # Autenticamos y obtenemos el gestor seguro
+        secure_stream_mngr = self.server.authenticate(self.sut, 'user', 'secret')
+        
+        # Enlazamos pasando AMBOS proxies
+        self.sut.bind_media_server(self.server, secure_stream_mngr)
+        
+        # Cargamos y reproducimos
+        self.sut.load_track('2s.mp3')
+        self.sut.play()

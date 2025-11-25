@@ -9,7 +9,8 @@ from Ice import identityToString as id2str
 
 from gst_player import GstPlayer
 
-Ice.loadSlice('-I{} spotifice_v1.ice'.format(Ice.getSliceDir()))
+# HITO 2: Cargamos la versión 2
+Ice.loadSlice('-I{} spotifice_v2.ice'.format(Ice.getSliceDir()))
 import Spotifice  # type: ignore # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
@@ -17,48 +18,61 @@ logger = logging.getLogger("MediaRender")
 
 class MediaRenderI(Spotifice.MediaRender):
     def __init__(self, player):
-
         self.player = player
         self.server: Spotifice.MediaServerPrx = None
-        self.current_track = None
+        
+        # HITO 2: Guardamos la sesión segura aquí
+        self.stream_manager: Spotifice.SecureStreamManagerPrx = None
 
-        # Hito1: Estado de la playlist
+        self.current_track = None
         self.current_playlist = None
         self.playlist_index = 0
         self.history = []
         self.repeat = False
         self.paused = False
 
-    def ensure_player_stopped(self):
-        if self.player.is_playing():
-            raise Spotifice.PlayerError(reason="Already playing")
-
     def ensure_server_bound(self):
         if not self.server:
             raise Spotifice.BadReference(reason="No MediaServer bound")
 
     # --- RenderConnectivity ---
-
-    def bind_media_server(self, media_server, current=None):
+    
+    # MODIFICADO HITO 2: Añadimos stream_manager=None para compatibilidad
+    def bind_media_server(self, media_server, stream_manager=None, current=None):
         try:
-            proxy = media_server.ice_timeout(500)
-            proxy.ice_ping()
+            media_server.ice_timeout(3000).ice_ping()
+            # Si nos pasan un stream_manager (Hito 2), lo probamos también
+            if stream_manager:
+                stream_manager.ice_timeout(3000).ice_ping()
         except Ice.ConnectionRefusedException as e:
             raise Spotifice.BadReference(reason=f"MediaServer not reachable: {e}")
 
         self.server = media_server
-        self.history = []           # reset history
+        self.stream_manager = stream_manager # Guardamos la sesión
+        
+        self.history = []
         self.current_playlist = None
-        logger.info(f"Bound to MediaServer '{id2str(media_server.ice_getIdentity())}'")
+        
+        # Log informativo
+        auth_msg = " (Authenticated)" if stream_manager else ""
+        logger.info(f"Bound to MediaServer '{id2str(media_server.ice_getIdentity())}'{auth_msg}")
 
     def unbind_media_server(self, current=None):
         self.stop(current)
+        
+        # HITO 2: Cerramos la sesión si existe
+        if self.stream_manager:
+            try:
+                self.stream_manager.close()
+            except Exception: pass
+
         self.server = None
+        self.stream_manager = None
         self.history = []
         self.current_playlist = None
         logger.info("Unbound MediaServer")
 
-    # --- ContentManager ---
+    # --- ContentManager (IDÉNTICO A TU HITO 1) ---
 
     def load_track(self, track_id, current=None):
         self.ensure_server_bound()
@@ -68,7 +82,6 @@ class MediaRenderI(Spotifice.MediaRender):
             self.history.append(self.current_track.id)
         logger.info(f"Current track set to: {self.current_track.title}")
 
-    # Hito1: Cargar una playlist
     def load_playlist(self, playlist_id, current=None):
         self.ensure_server_bound()
         playlist = self.server.get_playlist(playlist_id)
@@ -89,23 +102,29 @@ class MediaRenderI(Spotifice.MediaRender):
 
     @contextmanager
     def keep_playing_state(self, current):
-        # Recordar si estaba 'playing', no 'paused'
         was_playing = self.player.is_playing()
 
         if was_playing or self.paused:
-            self.stop(current) # Esto también pone self.paused = False
+            self.stop(current) 
 
         try:
-            yield # Aquí es donde la pista cambia
+            yield 
         finally:
-            
             if was_playing:
                 self.play(current)
+
+    # --- PlaybackController ---
 
     def play(self, current=None):
         def get_chunk_hook(chunk_size):
             try:
-                return self.server.get_audio_chunk(current.id, chunk_size)
+                # HITO 2: Usamos stream_manager en lugar de server
+                if self.stream_manager:
+                    return self.stream_manager.get_audio_chunk(chunk_size)
+                else:
+                    # Fallback por si los tests antiguos no autentican (aunque fallará en v2)
+                    logger.error("No Authentication Session found!")
+                    raise Spotifice.StreamError("NoAuth", "Authentication required")
             except Spotifice.IOError as e:
                 logger.error(e)
             except Ice.Exception as e:
@@ -114,24 +133,28 @@ class MediaRenderI(Spotifice.MediaRender):
         assert current, "remote invocation required"
         self.ensure_server_bound()
 
-    # Hito1: Reanudar la reproducción si estaba pausada
         if self.paused:
             self.paused = False
             self.player.resume()
+            logger.info("Resumed")
             return
 
         if not self.current_track:
             raise Spotifice.TrackError(reason="No track loaded")
 
-        self.server.open_stream(self.current_track.id, current.id)
+        # HITO 2: Validación de sesión
+        if not self.stream_manager:
+            raise Spotifice.PlayerError(reason="Authentication required for streaming")
+
+        # HITO 2: open_stream sobre la sesión (sin argumentos)
+        self.stream_manager.open_stream(self.current_track.id)
+        
         self.player.configure(get_chunk_hook)
 
         if not self.player.confirm_play_starts():
             raise Spotifice.PlayerError(reason="Failed to confirm playback")
 
-    # Hito1: Pausar la reproducción
     def pause(self, current=None):
-        # Definimos el estado 'playing' 
         is_in_playing_state = not self.paused and self.player.is_playing()
 
         if is_in_playing_state:
@@ -139,21 +162,22 @@ class MediaRenderI(Spotifice.MediaRender):
             self.paused = True
             logger.info("Paused")
         else:
-            # Si no está en playing, no se puede pausar 
             raise Spotifice.PlayerError(reason="Cannot pause, player is not PLAYING")
 
     def stop(self, current=None):
-        if self.server and current:
-            self.server.close_stream(current.id)
+        # HITO 2: Cerramos stream en la sesión
+        if self.stream_manager:
+            try:
+                self.stream_manager.close_stream()
+            except Exception: pass
 
         self.paused = False
 
         if not self.player.stop():
-            raise Spotifice.PlayerError(reason="Failed to confirm stop")
+            logger.warning("Player.stop() no confirmó, puede que ya estuviera parado.")
+        else:
+            logger.info("Stopped")
 
-        logger.info("Stopped")
-
-    # Hito1: Obtener el estado de reproducción
     def get_status(self, current=None):
         if self.paused:
             state = Spotifice.PlaybackState.PAUSED
@@ -166,7 +190,9 @@ class MediaRenderI(Spotifice.MediaRender):
             state=state,
             repeat=self.repeat,
             current_track_id=self.current_track.id if self.current_track else ""
-    )
+        )
+
+    # --- Métodos next/previous RESTAURADOS (Sin refactorizar) ---
 
     def next(self, current=None):
         assert current, "remote invocation required"
@@ -175,7 +201,6 @@ class MediaRenderI(Spotifice.MediaRender):
             logger.info("Next ignored: no playlist loaded.")
             return
 
-        # Recordamos si está pausado antes de cambiar de pista
         was_paused = self.paused
 
         is_at_end = self.playlist_index >= len(self.current_playlist.track_ids) - 1
@@ -201,23 +226,21 @@ class MediaRenderI(Spotifice.MediaRender):
 
         logger.info(f"Next track: {self.current_track.title}")
 
-    # Hito1: Pista anterior
     def previous(self, current=None):
         assert current, "remote invocation required"
-
+        
         was_paused = self.paused
 
         if len(self.history) < 2:
             logger.info("Previous ignored: no more history.")
             return
 
-        # Eliminamos la pista actual del histórico
         self.history.pop()
         prev_id = self.history[-1]
 
         self.ensure_server_bound()
         with self.keep_playing_state(current):
-            self.current_playlist = None
+            self.current_playlist = None 
             self.current_track = self.server.get_track_info(prev_id)
         
         if was_paused:
@@ -225,7 +248,6 @@ class MediaRenderI(Spotifice.MediaRender):
 
         logger.info(f"Previous track: {self.current_track.title}")
 
-    # Hito1: Establecer el modo de repetición
     def set_repeat(self, value, current=None):  
         self.repeat = value                     
         logger.info(f"Repeat = {self.repeat}")
