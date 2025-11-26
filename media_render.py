@@ -34,10 +34,8 @@ class MediaRenderI(Spotifice.MediaRender):
     def ensure_server_bound(self):
         if not self.server:
             raise Spotifice.BadReference(reason="No MediaServer bound")
-
-    # --- RenderConnectivity ---
     
-    # MODIFICADO HITO 2: Añadimos stream_manager=None para compatibilidad
+    # HITO 2: Añado stream_manager=None para compatibilidad
     def bind_media_server(self, media_server, stream_manager=None, current=None):
         try:
             media_server.ice_timeout(3000).ice_ping()
@@ -71,8 +69,6 @@ class MediaRenderI(Spotifice.MediaRender):
         self.history = []
         self.current_playlist = None
         logger.info("Unbound MediaServer")
-
-    # --- ContentManager (IDÉNTICO A TU HITO 1) ---
 
     def load_track(self, track_id, current=None):
         self.ensure_server_bound()
@@ -113,12 +109,12 @@ class MediaRenderI(Spotifice.MediaRender):
             if was_playing:
                 self.play(current)
 
-    # --- PlaybackController ---
+    # PlaybackController
 
     def play(self, current=None):
         def get_chunk_hook(chunk_size):
             try:
-                # HITO 2: Usamos stream_manager en lugar de server
+                # HITO 2: Uso stream_manager en lugar de server
                 if self.stream_manager:
                     return self.stream_manager.get_audio_chunk(chunk_size)
                 else:
@@ -138,6 +134,9 @@ class MediaRenderI(Spotifice.MediaRender):
             self.player.resume()
             logger.info("Resumed")
             return
+
+        if self.player.is_playing():
+            raise Spotifice.PlayerError(reason="Already playing")
 
         if not self.current_track:
             raise Spotifice.TrackError(reason="No track loaded")
@@ -191,8 +190,6 @@ class MediaRenderI(Spotifice.MediaRender):
             repeat=self.repeat,
             current_track_id=self.current_track.id if self.current_track else ""
         )
-
-    # --- Métodos next/previous RESTAURADOS (Sin refactorizar) ---
 
     def next(self, current=None):
         assert current, "remote invocation required"

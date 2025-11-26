@@ -7,13 +7,19 @@ from .icetest import IceTestCase
 
 
 class TestRender(IceTestCase):
-    render_port = 10001
-    server_port = 10000
-
     def setUp(self):
+        import random
+        self.server_port = random.randint(10000, 15000)
+        self.render_port = random.randint(15001, 20000)
+       
+        import os
+        cwd = os.getcwd()
+        users_file_path = os.path.join(cwd, 'users.json')
+       
         server_props = {
             'MediaServerAdapter.Endpoints': f'tcp -p {self.server_port}',
-            'MediaServer.Content': 'test/media'}
+            'MediaServer.Content': 'test/media',
+            'MediaServer.UsersFile': users_file_path}
         server_endpoint = f'mediaServer1:default -p {self.server_port} -t 500'
         self.create_server(server_main, server_props)
 
@@ -45,7 +51,7 @@ class PlaybackTests(TestRender):
         self.assertEqual(cm.exception.reason, "No MediaServer bound")
 
     def test_play_unloaded_track(self):
-        self.sut.bind_media_server(self.server)
+        self.sut.bind_media_server(self.server, None)
 
         with self.assertRaises(Spotifice.TrackError) as cm:
             self.sut.play()
@@ -54,14 +60,16 @@ class PlaybackTests(TestRender):
 
     def test_normal_play(self):
         tracks = self.server.get_all_tracks()
-        self.sut.bind_media_server(self.server)
+        sm = self.server.authenticate(self.sut, 'user', 'secret')
+        self.sut.bind_media_server(self.server, sm)
         self.sut.load_track(tracks[1].id)
 
         self.sut.play()
 
     def test_can_not_play_if_player_busy(self):
         tracks = self.server.get_all_tracks()
-        self.sut.bind_media_server(self.server)
+        sm = self.server.authenticate(self.sut, 'user', 'secret')
+        self.sut.bind_media_server(self.server, sm)
         self.sut.load_track(tracks[1].id)
 
         self.sut.play()
@@ -73,12 +81,19 @@ class PlaybackTests(TestRender):
 
 class AuthTests(TestRender):
     def test_secure_play(self):
-        # Autenticamos y obtenemos el gestor seguro
         secure_stream_mngr = self.server.authenticate(self.sut, 'user', 'secret')
-        
-        # Enlazamos pasando AMBOS proxies
         self.sut.bind_media_server(self.server, secure_stream_mngr)
-        
-        # Cargamos y reproducimos
         self.sut.load_track('2s.mp3')
         self.sut.play()
+
+    def test_auth_idempotency(self):
+        # Regla 2: Mismo usuario -> Misma sesión (no error)
+        sm1 = self.server.authenticate(self.sut, 'user', 'secret')
+        sm2 = self.server.authenticate(self.sut, 'user', 'secret')
+        self.assertEqual(sm1, sm2)
+
+    def test_auth_conflict(self):
+        # Regla 1: Usuario diferente en sesión activa -> AuthError
+        self.server.authenticate(self.sut, 'user', 'secret')
+        with self.assertRaises(Spotifice.AuthError):
+            self.server.authenticate(self.sut, 'jdoe', 'secret')

@@ -6,12 +6,18 @@ from .icetest import IceTestCase
 
 
 class TestServer(IceTestCase):
-    server_port = 10000
-
     def setUp(self):
+        import random
+        import os
+        self.server_port = random.randint(20000, 25000)
+       
+        cwd = os.getcwd()
+        users_file_path = os.path.join(cwd, 'users.json')
+
         server_props = {
             'MediaServerAdapter.Endpoints': f'tcp -p {self.server_port}',
-            'MediaServer.Content': 'test/media'
+            'MediaServer.Content': 'test/media',
+            'MediaServer.UsersFile': users_file_path
         }
         server_endpoint = f'mediaServer1:default -p {self.server_port} -t 500'
         self.create_server(main, server_props)
@@ -38,46 +44,36 @@ class MusicLibraryTests(TestServer):
 
 
 class StreamManagerTests(TestServer):
+    def setUp(self):
+        super().setUp()
+        render_id = Ice.Identity(name='test-render', category='')
+        self.render_prx = Spotifice.MediaRenderPrx.uncheckedCast(
+            self.client_ic.stringToProxy("test-render"))
+        self.sm = self.sut.authenticate(self.render_prx, "user", "secret")
+
     def test_open_stream_wrong_track(self):
         track_id = 'bad-track-id'
-        render_id = self.client_ic.stringToIdentity('bad-render-id')
 
         with self.assertRaises(Spotifice.TrackError) as cm:
-            self.sut.open_stream(track_id, render_id)
+            self.sm.open_stream(track_id)
 
         self.assertEqual(cm.exception.item, 'bad-track-id')
         self.assertEqual(cm.exception.reason, 'Track not found')
 
-    def test_open_stream_wrong_render(self):
-        tracks = self.sut.get_all_tracks()
-        track_id = tracks[0].id
-        render_id = Ice.Identity(name='')
-
-        with self.assertRaises(Spotifice.BadIdentity) as cm:
-            self.sut.open_stream(track_id, render_id)
-
-        self.assertEqual(cm.exception.item, '')
-        self.assertEqual(cm.exception.reason, 'Invalid render identity')
-
     def test_get_audio_chunk(self):
         track_id = self.sut.get_all_tracks()[0].id
-        render_id = Ice.Identity(name='fake-render-id')
 
-        self.sut.open_stream(track_id, render_id)
-        chunk = self.sut.get_audio_chunk(render_id, 1024)
+        self.sm.open_stream(track_id)
+        chunk = self.sm.get_audio_chunk(1024)
 
         self.assertGreater(len(chunk), 0)
 
-        # check same bytes as actual file
         with open('test/media/1s.mp3', 'rb') as f:
             expected = f.read(len(chunk))
             self.assertEqual(chunk, expected)
 
     def test_get_audio_chunk_not_open_stream(self):
-        render_id = Ice.Identity(name='missing-render-id')
-
         with self.assertRaises(Spotifice.StreamError) as cm:
-            self.sut.get_audio_chunk(render_id, 1024)
+            self.sm.get_audio_chunk(1024)
 
-        self.assertEqual(cm.exception.item, 'missing-render-id')
-        self.assertEqual(cm.exception.reason, 'No open stream for render')
+        self.assertEqual(cm.exception.reason, 'No open stream for this session')
