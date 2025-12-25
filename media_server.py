@@ -7,12 +7,15 @@ import hashlib
 import secrets
 import uuid
 from pathlib import Path
-
+# Nuevos imports
+import IceStorm
+import threading
+import time
 import Ice
 from Ice import identityToString as id2str
 
-# HITO 2: Cargo la versión 2
-Ice.loadSlice('-I{} spotifice_v2.ice'.format(Ice.getSliceDir()))
+# HITO 3: Cargo la versión 3
+Ice.loadSlice('-I{} spotifice_v3.ice'.format(Ice.getSliceDir()))
 import Spotifice  # type: ignore # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
@@ -96,13 +99,13 @@ class SecureStreamManagerI(Spotifice.SecureStreamManager):
         self.server_impl.remove_session(self.render_id_str)
         
         current.adapter.remove(current.id)
-
-
-class MediaServerI(Spotifice.MediaServer):
-    def __init__(self, media_dir, playlist_dir, users_file):
+                                                                
+class MediaServerI(Spotifice.MediaServer):                      #Hito 3
+    def __init__(self, media_dir, playlist_dir, users_file, identity_str):
         self.media_dir = Path(media_dir)
         self.playlist_dir = Path(playlist_dir)
         self.users_file = Path(users_file)
+        self.identity_str = identity_str # Guardamos la identidad (Hito 3)
 
         self.tracks = {}
         self.playlists = {}
@@ -244,7 +247,42 @@ class MediaServerI(Spotifice.MediaServer):
         
         logger.info(f"User '{username}' authenticated. Session created.")
         return secure_proxy
+    
+    # --- IMPLEMENTACIÓN HITO 3 (FINDER) ---
+    def find_track(self, track_id, listener, current=None):
+        if track_id in self.tracks:
+            try:
+                # Usamos self.identity_str para crear el proxy correcto hacia este servidor
+                comm = current.adapter.getCommunicator()
+                my_id = comm.stringToIdentity(self.identity_str)
+                my_prx = Spotifice.MediaServerPrx.uncheckedCast(current.adapter.createProxy(my_id))
+                
+                # Avisamos al listener
+                listener.track_found(self.tracks[track_id], my_prx)
+                logger.info(f"Finder: track '{track_id}' found. Replying.")
+            except Exception as e:
+                logger.error(f"Finder error: {e}")
+    # Hito 3
+    def find_playlist(self, playlist_id, listener, current=None):
+        if playlist_id in self.playlists:
+            try:
+                comm = current.adapter.getCommunicator()
+                my_id = comm.stringToIdentity(self.identity_str)
+                my_prx = Spotifice.MediaServerPrx.uncheckedCast(current.adapter.createProxy(my_id))
+                
+                listener.playlist_found(self.playlists[playlist_id], my_prx)
+                logger.info(f"Finder: playlist '{playlist_id}' found. Replying.")
+            except Exception as e:
+                logger.error(f"Finder error: {e}")
 
+# hito 3, hilo de anuncios
+def announce_loop(publisher, my_proxy, interval):
+    while True:
+        try:
+            publisher.server_up(my_proxy)
+        except Exception as e:
+            logger.error(f"Announce error: {e}")
+        time.sleep(interval)
 
 def main(ic):
     properties = ic.getProperties()
@@ -252,23 +290,88 @@ def main(ic):
     playlist_dir = properties.getPropertyWithDefault('MediaServer.Playlists', 'playlists')
     users_file = properties.getPropertyWithDefault('MediaServer.UsersFile', 'users.json')
 
+    # --- CONFIGURACIÓN HITO 3 ---
+    # 1. Leer identidad de las propiedades o generar UUID
+    identity_str = properties.getProperty('MediaServer.Identity')
+    if not identity_str:
+        identity_str = str(uuid.uuid4())
+    
+    # 2. Leer propiedades de IceStorm
+    topic_mgr_proxy = properties.getProperty('IceStorm.TopicManager.Proxy')
+    discovery_topic_name = properties.getPropertyWithDefault('Discovery.TopicName', 'DiscoveryTopic')
+    finder_topic_name = properties.getPropertyWithDefault('Finder.TopicName', 'FinderTopic')
+    announce_interval = properties.getPropertyAsIntWithDefault('Discovery.AnnounceIntervalSecs', 15)
+
     adapter = ic.createObjectAdapter("MediaServerAdapter")
-    servant = MediaServerI(Path(media_dir), Path(playlist_dir), Path(users_file))
-    proxy = adapter.add(servant, ic.stringToIdentity("mediaServer1"))
-    logger.info(f"MediaServer: {proxy}")
+    
+    # --- CAMBIO: Pasamos la identidad al Servant ---
+    servant = MediaServerI(Path(media_dir), Path(playlist_dir), Path(users_file), identity_str)
+    
+    # --- CAMBIO: Registramos con la identidad específica ---
+    server_id = ic.stringToIdentity(identity_str)
+    proxy = adapter.add(servant, server_id)
+    # Cast a MediaServerPrx
+    media_server_prx = Spotifice.MediaServerPrx.uncheckedCast(proxy)
+    
+    logger.info(f"MediaServer started with ID: {identity_str}")
+
+    # --- LÓGICA ICESTORM (HITO 3) ---
+    # Solo entramos aquí si hay un TopicManager configurado
+    finder_topic = None
+    if topic_mgr_proxy:
+        try:
+            # Conectar a IceStorm
+            topic_mgr = IceStorm.TopicManagerPrx.checkedCast(ic.stringToProxy(topic_mgr_proxy))
+            
+            # A) Suscribirse al canal Finder (Para recibir búsquedas)
+            try:
+                finder_topic = topic_mgr.retrieve(finder_topic_name)
+            except IceStorm.NoSuchTopic:
+                finder_topic = topic_mgr.create(finder_topic_name)
+            
+            qos = {}
+            finder_topic.subscribeAndGetPublisher(qos, media_server_prx)
+            logger.info(f"Subscribed to FinderTopic: {finder_topic_name}")
+
+            # B) Publicar en el canal Discovery (Para anunciarse)
+            try:
+                disc_topic = topic_mgr.retrieve(discovery_topic_name)
+            except IceStorm.NoSuchTopic:
+                disc_topic = topic_mgr.create(discovery_topic_name)
+            
+            pub = disc_topic.getPublisher()
+            announce_pub = Spotifice.AnnounceListenerPrx.uncheckedCast(pub)
+
+            # Arrancar el hilo de anuncios
+            t = threading.Thread(
+                target=announce_loop, 
+                args=(announce_pub, media_server_prx, announce_interval), 
+                daemon=True
+            )
+            t.start()
+            logger.info(f"Announce thread started ({announce_interval}s interval)")
+
+        except Exception as e:
+            logger.error(f"IceStorm error: {e}")
+            logger.warning("Running without Hito 3 discovery features.")
+    else:
+        logger.warning("No IceStorm.TopicManager.Proxy configured.")
 
     adapter.activate()
     ic.waitForShutdown()
 
+    # Desuscribirse al salir (limpieza)
+    if finder_topic:
+        try:
+            finder_topic.unsubscribe(media_server_prx)
+        except: pass
     logger.info("Shutdown")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.exit("Usage: media_server.py <config-file>")
-
+    config = sys.argv[1] if len(sys.argv) > 1 else "server.config"
     try:
-        with Ice.initialize(sys.argv[1]) as communicator:
+        with Ice.initialize(["--Ice.Config=" + config]) as communicator:
             main(communicator)
     except KeyboardInterrupt:
         logger.info("Server interrupted by user.")

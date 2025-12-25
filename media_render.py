@@ -3,14 +3,18 @@
 import logging
 import sys
 from contextlib import contextmanager
-
+# Nuevos imports
+import uuid
+import IceStorm
+import threading
+import time
 import Ice
 from Ice import identityToString as id2str
 
 from gst_player import GstPlayer
 
-# HITO 2: Cargamos la versión 2
-Ice.loadSlice('-I{} spotifice_v2.ice'.format(Ice.getSliceDir()))
+# HITO 3: Cargamos la versión 3
+Ice.loadSlice('-I{} spotifice_v3.ice'.format(Ice.getSliceDir()))
 import Spotifice  # type: ignore # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
@@ -249,13 +253,71 @@ class MediaRenderI(Spotifice.MediaRender):
         self.repeat = value                     
         logger.info(f"Repeat = {self.repeat}")
 
+# --- FUNCIÓN HILO DE ANUNCIOS (Hito 3) ---
+def announce_loop(publisher, my_proxy, interval):
+    while True:
+        try:
+            # Anunciar presencia al directorio
+            publisher.server_up(my_proxy)
+        except Exception as e:
+            logger.error(f"Announce error: {e}")
+        time.sleep(interval)
 
 def main(ic, player):
-    servant = MediaRenderI(player)
+   # --- CONFIGURACIÓN HITO 3 ---
+    props = ic.getProperties()
+    
+    # [cite_start]1. Identidad dinámica (UUID si no se configura) 
+    identity_str = props.getProperty("MediaRender.Identity")
+    if not identity_str:
+        identity_str = str(uuid.uuid4())
 
+    # 2. Configuración IceStorm
+    topic_mgr_proxy = props.getProperty("IceStorm.TopicManager.Proxy")
+    discovery_topic_name = props.getPropertyWithDefault("Discovery.TopicName", "DiscoveryTopic")
+    announce_interval = props.getPropertyAsIntWithDefault("Discovery.AnnounceIntervalSecs", 15)
+
+    servant = MediaRenderI(player)
     adapter = ic.createObjectAdapter("MediaRenderAdapter")
-    proxy = adapter.add(servant, ic.stringToIdentity("mediaRender1"))
-    logger.info(f"MediaRender: {proxy}")
+    
+    # 3. Añadir servant con identidad calculada
+    id_ice = ic.stringToIdentity(identity_str)
+    proxy = adapter.add(servant, id_ice)
+    
+    # Obtenemos proxy tipado para enviarlo al directorio
+    my_prx = Spotifice.MediaRenderPrx.uncheckedCast(proxy)
+    logger.info(f"MediaRender started with ID: {identity_str}")
+
+    # 4. Conexión IceStorm y Anuncios
+    if topic_mgr_proxy:
+        try:
+            topic_mgr = IceStorm.TopicManagerPrx.checkedCast(ic.stringToProxy(topic_mgr_proxy))
+            if not topic_mgr:
+                raise RuntimeError("Invalid TopicManager proxy")
+
+            try:
+                topic = topic_mgr.retrieve(discovery_topic_name)
+            except IceStorm.NoSuchTopic:
+                topic = topic_mgr.create(discovery_topic_name)
+            
+            # Obtener publicador del tema Discovery
+            pub = topic.getPublisher()
+            announce_pub = Spotifice.AnnounceListenerPrx.uncheckedCast(pub)
+            
+            # [cite_start]Iniciar hilo de anuncios 
+            t = threading.Thread(
+                target=announce_loop, 
+                args=(announce_pub, my_prx, announce_interval), 
+                daemon=True
+            )
+            t.start()
+            logger.info(f"Render announce thread started ({announce_interval}s)")
+            
+        except Exception as e:
+            logger.error(f"IceStorm Error: {e}")
+            logger.warning("Running without Discovery features.")
+    else:
+        logger.warning("No IceStorm.TopicManager.Proxy configured.")
 
     adapter.activate()
     ic.waitForShutdown()
@@ -264,13 +326,11 @@ def main(ic, player):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.exit("Usage: media_render.py <config-file>")
-
+    config = sys.argv[1] if len(sys.argv) > 1 else "render.config"
     player = GstPlayer()
     player.start()
     try:
-        with Ice.initialize(sys.argv[1]) as communicator:
+        with Ice.initialize(["--Ice.Config=" + config]) as communicator:
             main(communicator, player)
     except KeyboardInterrupt:
         logger.info("Server interrupted by user.")
