@@ -10,7 +10,7 @@ Sistema distribuido de streaming de audio construido sobre el middleware **ZeroC
 
 Este repositorio parte de una **plantilla base proporcionada por el equipo docente** de la asignatura a través de GitHub Classroom (estructura de carpetas, definición de interfaces Ice, ficheros de configuración de ejemplo, tests automáticos de evaluación, playlists de ejemplo y el reproductor local `gst_player.py`).
 
-**La lógica de negocio de los distintos componentes distribuidos — es decir, la implementación funcional de cada hito descrito más abajo — ha sido desarrollada íntegramente por mí**, siguiendo el enunciado de la práctica. La sección [Estructura del proyecto](#-estructura-del-proyecto) detalla qué partes corresponden a la plantilla base y cuáles he implementado yo.
+Además, **`media_server.py` y `media_render.py` partían ya de un esqueleto base proporcionado por la profesora** (estructura de clases, `main()`, carga inicial de recursos, etc.), y **mi trabajo ha consistido en implementar sobre esa base las funcionalidades que pedía el enunciado de cada hito** (playlists, nuevas operaciones de reproducción, autenticación, sesiones seguras, descubrimiento y búsqueda). `media_control.py` y `media_directory.py` los he escrito íntegramente yo, sin esqueleto previo. La sección [Estructura del proyecto](#-estructura-del-proyecto) detalla qué partes corresponden a la plantilla base y cuáles he implementado o ampliado yo.
 
 ## 📖 Descripción general
 
@@ -115,10 +115,10 @@ Las dependencias exactas se listan en el fichero `DEPENDS` del proyecto.
 | Fichero / carpeta | Origen | Descripción |
 |---|---|---|
 | `spotifice_v3.ice` | 🏫 Plantilla base | Definición de las interfaces remotas (contrato Ice) |
-| `media_server.py` | 👤 Implementación propia | Lógica de `MediaServer`: catálogo, playlists, autenticación, streaming y búsqueda |
-| `media_render.py` | 👤 Implementación propia | Lógica de `MediaRender`: reproducción, control, anuncio de presencia |
-| `media_control.py` | 👤 Implementación propia | Cliente de pruebas: descubrimiento, búsqueda, autenticación y reproducción end-to-end |
-| `media_directory.py` | 👤 Implementación propia (fichero nuevo del Hito 3) | Registro de servidores y renders activos vía IceStorm |
+| `media_server.py` | 🏫 Esqueleto + 👤 Ampliado por mí | Lógica de `MediaServer`: catálogo, playlists, autenticación, streaming y búsqueda |
+| `media_render.py` | 🏫 Esqueleto + 👤 Ampliado por mí | Lógica de `MediaRender`: reproducción, control, anuncio de presencia |
+| `media_control.py` | 👤 Implementación propia (sin esqueleto previo) | Cliente de pruebas: descubrimiento, búsqueda, autenticación y reproducción end-to-end |
+| `media_directory.py` | 👤 Implementación propia (sin esqueleto previo, Hito 3) | Registro de servidores y renders activos vía IceStorm |
 | `gst_player.py` | 🏫 Plantilla base | Reproductor local de `.mp3` sobre GStreamer |
 | `server.config` / `render.config` / `control.config` / `directory.config` | 🏫 Base, ampliados por mí | Propiedades de configuración de cada componente (endpoints, IceStorm, identidades) |
 | `icebox.config` | 🏫 / 👤 | Configuración del servicio IceStorm ejecutado sobre IceBox (necesario para el Hito 3) |
